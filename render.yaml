@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: jarvis-os
+    runtime: node
+    plan: starter
+    buildCommand: npm install && npm run build
+    startCommand: npm run start
+    envVars:
+      - key: VITE_N8N_WEBHOOK_URL
+        sync: false
+      - key: VITE_TTS_API_URL
+        value: https://jarvis-tts-backend.onrender.com/tts
