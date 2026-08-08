@@ -48,20 +48,71 @@ export type JarvisReply = { output: string; tts: string };
 export const GENERIC_ERROR =
   "Je ne parviens pas à joindre JARVIS pour le moment. Vérifiez votre connexion puis réessayez.";
 
-function extract(raw: unknown): { output?: string | undefined; tts?: string | undefined } {
-  if (!raw) return {};
-  if (Array.isArray(raw)) return extract(raw[0]);
+function extract(raw: unknown): { output?: string; tts?: string } {
+  if (raw === null || raw === undefined) return {};
+
+  if (Array.isArray(raw)) {
+    return extract(raw[0]);
+  }
+
   if (typeof raw === "string") {
     const trimmed = raw.trim();
-    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+
+    if (
+      (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+      (trimmed.startsWith("[") && trimmed.endsWith("]"))
+    ) {
       try {
         return extract(JSON.parse(trimmed));
       } catch {
-        return { output: raw };
+        return { output: trimmed, tts: trimmed };
       }
     }
-    return { output: raw };
+
+    return { output: trimmed, tts: trimmed };
   }
+
+  if (typeof raw !== "object") return {};
+
+  const obj = raw as Record<string, unknown>;
+
+  const output =
+    typeof obj.output === "string"
+      ? obj.output
+      : typeof obj.text === "string"
+        ? obj.text
+        : typeof obj.message === "string"
+          ? obj.message
+          : typeof obj.response === "string"
+            ? obj.response
+            : undefined;
+
+  const tts =
+    typeof obj.tts === "string"
+      ? obj.tts
+      : undefined;
+
+  if (output || tts) {
+    return {
+      output: output ?? tts,
+      tts: tts ?? output,
+    };
+  }
+
+  const nestedKeys = ["data", "json", "result", "body", "response"];
+
+  for (const key of nestedKeys) {
+    if (obj[key] !== undefined) {
+      const nested = extract(obj[key]);
+
+      if (nested.output || nested.tts) {
+        return nested;
+      }
+    }
+  }
+
+  return {};
+}
   if (typeof raw === "object") {
     const obj = raw as Record<string, unknown>;
     const nested = obj["data"] ?? obj["json"] ?? obj["result"] ?? obj["body"];
