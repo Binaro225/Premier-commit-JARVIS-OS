@@ -1,32 +1,43 @@
 /**
  * Communication avec le webhook n8n.
- * Aucune clé secrète ici : uniquement des URLs publiques via variables d'env.
- *
- * CORS : l'agent n8n doit autoriser le domaine Render du frontend
- * (Access-Control-Allow-Origin) sinon le navigateur bloquera la requête.
+ * Aucune clé secrète ici : uniquement des URLs publiques via variables d'environnement.
  */
 
-export const N8N_WEBHOOK_URL = (import.meta.env["VITE_N8N_WEBHOOK_URL"] as string | undefined) ?? "";
+export const N8N_WEBHOOK_URL =
+  (import.meta.env["VITE_N8N_WEBHOOK_URL"] as string | undefined) ?? "";
 
 const SESSION_KEY = "jarvis.sessionId";
 
+export type JarvisReply = {
+  output: string;
+  tts: string;
+};
+
+export const GENERIC_ERROR =
+  "Je ne parviens pas à joindre JARVIS pour le moment. Vérifiez votre connexion puis réessayez.";
+
 export function getSessionId(): string {
   if (typeof window === "undefined") return "server";
+
   let id = window.localStorage.getItem(SESSION_KEY);
+
   if (!id) {
     id =
       typeof crypto !== "undefined" && "randomUUID" in crypto
         ? crypto.randomUUID()
         : `sess-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
     window.localStorage.setItem(SESSION_KEY, id);
   }
+
   return id;
 }
 
-/** Retire les artefacts Markdown / décoratifs avant affichage et avant TTS. */
+/** Retire les artefacts Markdown et les espaces inutiles. */
 export function cleanText(input: unknown): string {
-  let text = typeof input === "string" ? input : "";
-  text = text
+  if (typeof input !== "string") return "";
+
+  return input
     .replace(/```[\s\S]*?```/g, " ")
     .replace(/`([^`]*)`/g, "$1")
     .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
@@ -35,41 +46,48 @@ export function cleanText(input: unknown): string {
     .replace(/^\s{0,3}>\s?/gm, "")
     .replace(/\*\*([^*]+)\*\*/g, "$1")
     .replace(/(^|\s)[*_]([^*_]+)[*_]/g, "$1$2")
-    .replace(/^\s*[-*+]\s+/gm, "• ")
     .replace(/[#*_~|]+/g, "")
     .replace(/[ \t]{2,}/g, " ")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
-  return text;
 }
 
-export type JarvisReply = { output: string; tts: string };
-
-export const GENERIC_ERROR =
-  "Je ne parviens pas à joindre JARVIS pour le moment. Vérifiez votre connexion puis réessayez.";
-
-function extract(raw: unknown): { output?: string; tts?: string } {
+/**
+ * Extrait uniquement output et tts.
+ * Accepte les objets directs, les réponses imbriquées et le JSON renvoyé comme texte.
+ */
+function extract(raw: unknown): Partial<JarvisReply> {
   if (raw === null || raw === undefined) return {};
 
   if (Array.isArray(raw)) {
-    return extract(raw[0]);
-  }
+    for (const item of raw) {
+      const result = extract(item);
 
-  if (typeof raw === "string") {
-    const trimmed = raw.trim();
-
-    if (
-      (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
-      (trimmed.startsWith("[") && trimmed.endsWith("]"))
-    ) {
-      try {
-        return extract(JSON.parse(trimmed));
-      } catch {
-        return { output: trimmed, tts: trimmed };
+      if (result.output || result.tts) {
+        return result;
       }
     }
 
-    return { output: trimmed, tts: trimmed };
+    return {};
+  }
+
+  if (typeof raw === "string") {
+    const text = raw.trim();
+
+    if (!text) return {};
+
+    if (
+      (text.startsWith("{") && text.endsWith("}")) ||
+      (text.startsWith("[") && text.endsWith("]"))
+    ) {
+      try {
+        return extract(JSON.parse(text));
+      } catch {
+        // Le texte ressemble à du JSON, mais il n'est pas valide.
+      }
+    }
+
+    return { output: text, tts: text };
   }
 
   if (typeof raw !== "object") return {};
@@ -87,10 +105,7 @@ function extract(raw: unknown): { output?: string; tts?: string } {
             ? obj.response
             : undefined;
 
-  const tts =
-    typeof obj.tts === "string"
-      ? obj.tts
-      : undefined;
+  const tts = typeof obj.tts === "string" ? obj.tts : undefined;
 
   if (output || tts) {
     return {
@@ -99,9 +114,7 @@ function extract(raw: unknown): { output?: string; tts?: string } {
     };
   }
 
-  const nestedKeys = ["data", "json", "result", "body", "response"];
-
-  for (const key of nestedKeys) {
+  for (const key of ["data", "json", "result", "body", "response"]) {
     if (obj[key] !== undefined) {
       const nested = extract(obj[key]);
 
@@ -113,36 +126,24 @@ function extract(raw: unknown): { output?: string; tts?: string } {
 
   return {};
 }
-  if (typeof raw === "object") {
-    const obj = raw as Record<string, unknown>;
-    const nested = obj["data"] ?? obj["json"] ?? obj["result"] ?? obj["body"];
-    const direct = {
-      output:
-        typeof obj["output"] === "string"
-          ? (obj["output"] as string)
-          : typeof obj["text"] === "string"
-            ? (obj["text"] as string)
-            : typeof obj["message"] === "string"
-              ? (obj["message"] as string)
-              : undefined,
-      tts: typeof obj["tts"] === "string" ? (obj["tts"] as string) : undefined,
-    };
-    if (direct.output || direct.tts) return direct;
-    if (nested) return extract(nested);
-  }
-  return {};
-}
 
-export async function askJarvis(message: string, timeoutMs = 45000): Promise<JarvisReply> {
-  if (!N8N_WEBHOOK_URL) throw new Error("missing-webhook");
+export async function askJarvis(
+  message: string,
+  timeoutMs = 45_000,
+): Promise<JarvisReply> {
+  if (!N8N_WEBHOOK_URL) {
+    throw new Error("missing-webhook");
+  }
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const res = await fetch(N8N_WEBHOOK_URL, {
+    const response = await fetch(N8N_WEBHOOK_URL, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+      },
       body: JSON.stringify({
         message,
         sessionId: getSessionId(),
@@ -152,40 +153,53 @@ export async function askJarvis(message: string, timeoutMs = 45000): Promise<Jar
       signal: controller.signal,
     });
 
-    if (!res.ok) throw new Error(`http-${res.status}`);
+    const rawBody = await response.text();
 
-    const rawBody = await res.text();
+    if (!response.ok) {
+      throw new Error(`http-${response.status}`);
+    }
+
     let parsed: unknown = rawBody;
+
     try {
       parsed = JSON.parse(rawBody);
     } catch {
-      /* texte brut */
+      // n8n peut exceptionnellement répondre par du texte brut.
     }
 
-    const { output, tts } = extract(parsed);
-    const cleanOutput = cleanText(output ?? tts ?? "");
-    const cleanTts = cleanText(tts ?? output ?? "");
+    const reply = extract(parsed);
+    const output = cleanText(reply.output ?? reply.tts ?? "");
+    const tts = cleanText(reply.tts ?? reply.output ?? "");
 
-    if (!cleanOutput && !cleanTts) throw new Error("empty-response");
+    if (!output && !tts) {
+      throw new Error("empty-response");
+    }
 
     return {
-      output: cleanOutput || cleanTts,
-      tts: cleanTts || cleanOutput,
+      output: output || tts,
+      tts: tts || output,
     };
   } finally {
-    clearTimeout(timer);
+    window.clearTimeout(timer);
   }
 }
 
 export async function pingWebhook(): Promise<boolean> {
   if (!N8N_WEBHOOK_URL) return false;
+
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 8_000);
+
   try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 8000);
-    const res = await fetch(N8N_WEBHOOK_URL, { method: "OPTIONS", signal: controller.signal });
-    clearTimeout(timer);
-    return res.status < 500;
+    const response = await fetch(N8N_WEBHOOK_URL, {
+      method: "OPTIONS",
+      signal: controller.signal,
+    });
+
+    return response.status < 500;
   } catch {
     return false;
+  } finally {
+    window.clearTimeout(timer);
   }
 }
