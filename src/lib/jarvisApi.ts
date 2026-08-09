@@ -129,7 +129,7 @@ function extract(raw: unknown): Partial<JarvisReply> {
 
 export async function askJarvis(
   message: string,
-  timeoutMs = 45_000,
+  timeoutMs = 120_000,
 ): Promise<JarvisReply> {
   if (!N8N_WEBHOOK_URL) {
     throw new Error("missing-webhook");
