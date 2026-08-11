@@ -1,10 +1,15 @@
 /**
  * Communication avec le webhook n8n.
- * Aucune clé secrète ici : uniquement des URLs publiques via variables d'environnement.
  */
 
-export const N8N_WEBHOOK_URL =
-  (import.meta.env["VITE_N8N_WEBHOOK_URL"] as string | undefined) ?? "";
+// Lecture dynamique de l'URL du webhook
+export function getWebhookUrl(): string {
+  const url =
+    (import.meta.env.VITE_N8N_WEBHOOK_URL as string | undefined) ||
+    (import.meta.env.VITE_WEBHOOK_URL as string | undefined) ||
+    "";
+  return url.trim();
+}
 
 const SESSION_KEY = "jarvis.sessionId";
 
@@ -52,28 +57,19 @@ export function cleanText(input: unknown): string {
     .trim();
 }
 
-/**
- * Extrait uniquement output et tts.
- * Accepte les objets directs, les réponses imbriquées et le JSON renvoyé comme texte.
- */
 function extract(raw: unknown): Partial<JarvisReply> {
   if (raw === null || raw === undefined) return {};
 
   if (Array.isArray(raw)) {
     for (const item of raw) {
       const result = extract(item);
-
-      if (result.output || result.tts) {
-        return result;
-      }
+      if (result.output || result.tts) return result;
     }
-
     return {};
   }
 
   if (typeof raw === "string") {
     const text = raw.trim();
-
     if (!text) return {};
 
     if (
@@ -83,7 +79,7 @@ function extract(raw: unknown): Partial<JarvisReply> {
       try {
         return extract(JSON.parse(text));
       } catch {
-        // Le texte ressemble à du JSON, mais il n'est pas valide.
+        // Ignorer si ce n'est pas du JSON valide
       }
     }
 
@@ -117,10 +113,7 @@ function extract(raw: unknown): Partial<JarvisReply> {
   for (const key of ["data", "json", "result", "body", "response"]) {
     if (obj[key] !== undefined) {
       const nested = extract(obj[key]);
-
-      if (nested.output || nested.tts) {
-        return nested;
-      }
+      if (nested.output || nested.tts) return nested;
     }
   }
 
@@ -131,7 +124,12 @@ export async function askJarvis(
   message: string,
   timeoutMs = 220_000,
 ): Promise<JarvisReply> {
-  if (!N8N_WEBHOOK_URL) {
+  const webhookUrl = getWebhookUrl();
+
+  console.log("--> Webhook URL ciblée :", webhookUrl);
+
+  if (!webhookUrl) {
+    console.error("ERREUR : Aucune URL de webhook n'est configurée dans VITE_N8N_WEBHOOK_URL !");
     throw new Error("missing-webhook");
   }
 
@@ -139,13 +137,14 @@ export async function askJarvis(
   const timer = window.setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const response = await fetch(N8N_WEBHOOK_URL, {
+    const response = await fetch(webhookUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
         message,
+        chatInput: message, // Compatibilité au cas où n8n attend chatInput
         sessionId: getSessionId(),
         source: "jarvis-os-pwa",
         language: "fr",
@@ -164,7 +163,7 @@ export async function askJarvis(
     try {
       parsed = JSON.parse(rawBody);
     } catch {
-      // n8n peut exceptionnellement répondre par du texte brut.
+      // Texte brut
     }
 
     const reply = extract(parsed);
@@ -185,13 +184,14 @@ export async function askJarvis(
 }
 
 export async function pingWebhook(): Promise<boolean> {
-  if (!N8N_WEBHOOK_URL) return false;
+  const webhookUrl = getWebhookUrl();
+  if (!webhookUrl) return false;
 
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), 8_000);
 
   try {
-    const response = await fetch(N8N_WEBHOOK_URL, {
+    const response = await fetch(webhookUrl, {
       method: "OPTIONS",
       signal: controller.signal,
     });
